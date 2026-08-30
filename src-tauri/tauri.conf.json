@@ -24,7 +24,11 @@
       "csp": null,
       "assetProtocol": {
         "scope": [
-          "**/*"
+          "**/*",
+          "$APPCACHE/**",
+          "$APPCONFIG/**",
+          "$APPDATA/**",
+          "$APPLOCALDATA/**"
         ],
         "enable": true
       }
@@ -39,6 +43,9 @@
     "createUpdaterArtifacts": true
   },
   "plugins": {
+    "fs": {
+      "requireLiteralLeadingDot": false
+    },
     "updater": {
       "windows": {
         "installMode": "basicUi"
