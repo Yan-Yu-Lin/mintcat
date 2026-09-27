@@ -405,6 +405,11 @@ fn run(cli: &Cli, rep: Reporter) -> CliResult<(Value, String)> {
         }
         Cmd::Install { dry_run, force, offline, allow_foreign_paks, allow_old_mint, no_preserve, target } => {
             let g = select_game(&db, cli)?;
+            // validate before anything can write (ensure_active_profile may create a profile)
+            let pak = target.clone().unwrap_or_else(|| g.install_path.clone());
+            if pak.is_empty() || !Path::new(&pak).is_file() {
+                return Err(refused(format!("Game Path Not Found for {}: '{pak}' (use set-game-path)", g.name)));
+            }
             let p = if *dry_run || target.is_some() { active_profile(&db, &g, false)? } else { active_profile(&db, &g, true)? };
             let rt = load_runtime(cli)?;
             let cache = cache_dir(&db)?;
