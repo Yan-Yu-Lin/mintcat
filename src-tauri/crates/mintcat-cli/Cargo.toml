@@ -1,0 +1,24 @@
+[package]
+name = "mintcat-cli"
+version = "0.1.0"
+edition = "2021"
+description = "Headless command-line front end for MintCat (DRG / Rogue Core mod integration)"
+
+[[bin]]
+name = "mintcat-cli"
+path = "src/main.rs"
+
+# The integration engine is NOT linked in: like the GUI (src-tauri/src/integrator/runtime.rs),
+# the CLI dlopens the installed integrator runtime (libmintcat_integrator.so), so both use the
+# very same engine binary.
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+libloading = "0.8"
+md5 = "0.7"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "native-tls"] }
+rusqlite = "0.32"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+zip = { version = "2.2.0", default-features = false, features = ["aes-crypto", "deflate", "time"] }
+mintcat-integrator-api = { path = "../mintcat-integrator-api" }

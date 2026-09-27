@@ -11,6 +11,7 @@ members = [
     "crates/mintcat-integrator-api",
     "crates/mintcat-integrator-core",
     "crates/mintcat-integrator-ffi",
+    "crates/mintcat-cli",
 ]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
