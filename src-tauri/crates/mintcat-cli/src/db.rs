@@ -403,6 +403,44 @@ impl Db {
             .optional()?)
     }
 
+    /// ModDAO.getModByPlatformId(platformId, sourceType)
+    pub fn mod_id_by_platform(&self, platform_id: i64, source_type: &str) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT mod_id FROM mods WHERE platform_id = ?1 AND source_type = ?2 LIMIT 1",
+                params![platform_id, source_type],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    pub fn profile_mod_id(&self, profile_id: i64, mod_id: i64) -> Result<Option<i64>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id FROM profile_mods WHERE profile_id = ?1 AND mod_id = ?2",
+                params![profile_id, mod_id],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// HomeService.addModToProfile / ModService.ensureProfileModAssociation (enabled, used_version '')
+    pub fn add_profile_mod(&self, profile_id: i64, mod_id: i64, folder_id: Option<i64>) -> Result<i64> {
+        let max_sort: i64 = self.conn.query_row(
+            "SELECT COALESCE(MAX(sort_order), -1) FROM profile_mods WHERE profile_id = ?1",
+            params![profile_id],
+            |r| r.get(0),
+        )?;
+        self.conn.execute(
+            "INSERT INTO profile_mods (profile_id, mod_id, parent_folder_id, sort_order, is_enabled, used_version)
+             VALUES (?1, ?2, ?3, ?4, 1, '')",
+            params![profile_id, mod_id, folder_id, max_sort + 1],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
     /// ModService.addModFromPath / HomeService.addModFromPath for a local file or folder.
     /// Returns (mod_id, profile_mod_id, created_mod, added_to_profile).
     pub fn add_local_mod(

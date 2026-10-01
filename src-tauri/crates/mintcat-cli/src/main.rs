@@ -68,7 +68,8 @@ enum Cmd {
     Enable { selectors: Vec<String> },
     /// Disable mods
     Disable { selectors: Vec<String> },
-    /// Add a local .pak / .zip / mod folder (js/main.js, pak/, dll/, Content/) to the active profile
+    /// Add a local .pak / .zip / mod folder (js/main.js, pak/, dll/, Content/), or a mod.io URL
+    /// (https://mod.io/g/drg/m/<name>, metadata + dependencies; `install` downloads), to the active profile
     Add {
         path: PathBuf,
         /// Folder name (or id) inside the profile; default = first top-level folder (GUI default)
@@ -176,6 +177,68 @@ fn active_profile(db: &Db, game: &Game, write: bool) -> CliResult<Profile> {
     }
     db.find_active_profile(game.id)?
         .ok_or_else(|| not_found(format!("game {} has no profile yet (any write command creates 'default')", game.name)))
+}
+
+/// HomeService.addModFromModioUrl: metadata only (+ mod.io dependencies); `install` downloads.
+fn add_modio_url(
+    db: &mut Db,
+    _cli: &Cli,
+    g: &Game,
+    url: &str,
+    folder: Option<&str>,
+    create_folder: bool,
+    disabled: bool,
+) -> CliResult<(Value, String)> {
+    if !g.name.eq_ignore_ascii_case("drg") {
+        return Err(refused("mod.io URLs are only supported for DRG"));
+    }
+    let name_id = modio::parse_mod_link(url)
+        .ok_or_else(|| refused(format!("Invalid Mod Link: {url} (expected https://mod.io/g/drg/m/<name>)")))?;
+    let mio = modio::Modio::new(db)?;
+    let info = mio
+        .mod_by_name_id(&name_id)?
+        .ok_or_else(|| not_found(format!("Mod Not Existed: {url}")))?;
+    let platform_id = info.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+    let deps = if platform_id > 0 { mio.dependencies(platform_id)? } else { Vec::new() };
+
+    let b = db.backup_once("add")?;
+    let p = active_profile(db, g, true)?;
+    let folders = db.folders(p.id)?;
+    let folder_id = match folder {
+        Some(f) => match folders.iter().find(|x| x.name == f || x.id.to_string() == f) {
+            Some(x) => Some(x.id),
+            None if create_folder => {
+                let max = folders.iter().filter(|x| x.parent_folder_id.is_none()).map(|x| x.sort_order).max().unwrap_or(-1);
+                Some(db.create_folder(p.id, None, f, max + 1)?)
+            }
+            None => return Err(not_found(format!("no folder '{f}' in profile {} (use --create-folder)", p.name))),
+        },
+        None => folders.first().map(|f| f.id),
+    };
+    let main = mio.add_from_info(db, &info, p.id, folder_id)?;
+    if disabled && main.status == "added" {
+        db.set_enabled(main.profile_mod_id, false)?;
+    }
+    let mut dep_out = Vec::new();
+    for d in &deps {
+        dep_out.push(mio.add_from_info(db, d, p.id, folder_id)?);
+    }
+    let fname = db.folder_path(&db.folders(p.id)?, folder_id);
+    let mut text = format!(
+        "{}: {} {} (mod.io id {}) [{}] in {}/{}",
+        main.status, main.name, main.version, main.platform_id, main.profile_mod_id, p.name, fname
+    );
+    for d in &dep_out {
+        text.push_str(&format!("\n  dependency {}: {} {} (mod.io id {}) [{}]", d.status, d.name, d.version, d.platform_id, d.profile_mod_id));
+    }
+    if deps.is_empty() {
+        text.push_str("\n  no mod.io dependencies");
+    }
+    Ok((
+        json!({ "status": main.status, "mod": main, "dependencies": dep_out, "folder": fname, "profile": p.name, "db_backup": b,
+                "note": "metadata only; run `install` to download and apply" }),
+        text,
+    ))
 }
 
 fn load_runtime(cli: &Cli) -> CliResult<runtime::Runtime> {
@@ -358,7 +421,11 @@ fn run(cli: &Cli, rep: Reporter) -> CliResult<(Value, String)> {
         }
         Cmd::Add { path, folder, create_folder, disabled } => {
             let g = select_game(&db, cli)?;
-            let abs = std::fs::canonicalize(path).map_err(|_| not_found(format!("path does not exist: {}", path.display())))?;
+            let path_s = path.to_string_lossy().into_owned();
+            if path_s.starts_with("http://") || path_s.starts_with("https://") {
+                return add_modio_url(&mut db, cli, &g, &path_s, folder.as_deref(), *create_folder, *disabled);
+            }
+            let abs =std::fs::canonicalize(path).map_err(|_| not_found(format!("path does not exist: {}", path.display())))?;
             let abs_s = abs.to_string_lossy().into_owned();
             let rt = load_runtime(cli)?;
             if abs.is_dir() {

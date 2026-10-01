@@ -258,6 +258,130 @@ impl Modio {
     }
 }
 
+/// ModioApi.parseModLinks: `^https://mod\.io/g/drg/m/([^/#]+)` -> name_id
+pub fn parse_mod_link(link: &str) -> Option<String> {
+    let rest = link.strip_prefix("https://mod.io/g/drg/m/")?;
+    let name: String = rest.chars().take_while(|c| *c != '/' && *c != '#').collect();
+    // the GUI regex has no `?` exclusion, but a query string is never part of a name_id
+    let name = name.split('?').next().unwrap_or("").to_string();
+    if name.is_empty() { None } else { Some(name) }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AddedOnline {
+    pub status: String, // added | exists
+    pub mod_id: i64,
+    pub profile_mod_id: i64,
+    pub created_mod: bool,
+    pub platform_id: i64,
+    pub name: String,
+    pub version: String,
+}
+
+impl Modio {
+    /// ModioApi.getModInfoByName
+    pub fn mod_by_name_id(&self, name_id: &str) -> Result<Option<Value>> {
+        let data = self.get(&format!("/games/{GAME_ID}/mods?name_id={name_id}"))?;
+        Ok(data.get("data").and_then(|d| d.as_array()).and_then(|a| a.first().cloned()))
+    }
+
+    /// ModioApi.getDependencies
+    pub fn dependencies(&self, platform_id: i64) -> Result<Vec<Value>> {
+        let data = self.get(&format!("/games/{GAME_ID}/mods/{platform_id}/dependencies"))?;
+        Ok(data.get("data").and_then(|d| d.as_array()).cloned().unwrap_or_default())
+    }
+
+    /// ModService.addModFromModio (ModMapper.fromModioResponse + ensureProfileModAssociation +
+    /// upsert version/download/status). Metadata only; the file is downloaded by `install`.
+    pub fn add_from_info(&self, db: &Db, info: &Value, profile_id: i64, folder_id: Option<i64>) -> Result<AddedOnline> {
+        let s = |v: Option<&Value>| v.and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let platform_id = info.get("id").and_then(|v| v.as_i64()).context("mod.io response has no id")?;
+        let raw_tags: Vec<String> = info
+            .get("tags")
+            .and_then(|t| t.as_array())
+            .map(|a| a.iter().filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(String::from)).collect())
+            .unwrap_or_default();
+        let (tags, versions, approval) = parse_tags(&raw_tags);
+        let name = s(info.get("name"));
+        let name_id = s(info.get("name_id"));
+        let url = s(info.get("profile_url"));
+        let mf = info.get("modfile");
+        let version = mf
+            .and_then(|f| f.get("version").and_then(|v| v.as_str()).filter(|v| !v.is_empty()))
+            .or_else(|| mf.and_then(|f| f.get("filename").and_then(|v| v.as_str())).filter(|v| !v.is_empty()))
+            .unwrap_or("-")
+            .to_string();
+        let dl = mf.and_then(|f| f.pointer("/download/binary_url")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let size = mf.and_then(|f| f.get("filesize")).and_then(|v| v.as_i64()).unwrap_or(0);
+        let now = now_secs();
+        let now_ms_v = now_ms();
+
+        let mut existing = db.mod_id_by_platform(platform_id, "Modio")?;
+        if existing.is_none() && !url.is_empty() {
+            existing = db.mod_id_by_url(&url)?;
+        }
+        let created = existing.is_none();
+        if let Some(mod_id) = existing {
+            // HomeService.addModFromModioUrl: a known mod is only linked to the profile
+            let (pm_id, added) = match db.profile_mod_id(profile_id, mod_id)? {
+                Some(pm) => (pm, false),
+                None => (db.add_profile_mod(profile_id, mod_id, folder_id)?, true),
+            };
+            return Ok(AddedOnline {
+                status: if added { "added".into() } else { "exists".into() },
+                mod_id,
+                profile_mod_id: pm_id,
+                created_mod: false,
+                platform_id,
+                name,
+                version,
+            });
+        }
+        db.conn.execute(
+            "INSERT INTO mods (platform_id, game_id, name_id, display_name, original_name, url,
+                               source_type, tags, approval_status, depend_mod_id)
+             VALUES (?1, 1, ?2, ?3, ?3, ?4, 'Modio', ?5, ?6, 0)",
+            params![platform_id, name_id, name, url, serde_json::to_string(&tags)?, approval],
+        )?;
+        let mod_id = db.conn.last_insert_rowid();
+        // modsDAO.updateMod(...) with the same DTO fields
+        db.conn.execute(
+            "UPDATE mods SET platform_id = ?1, game_id = 1, name_id = ?2, display_name = ?3, original_name = ?3,
+                    url = ?4, source_type = 'Modio', tags = ?5, approval_status = ?6, depend_mod_id = 0, updated_at = ?7
+             WHERE mod_id = ?8",
+            params![platform_id, name_id, name, url, serde_json::to_string(&tags)?, approval, now, mod_id],
+        )?;
+        let (pm_id, added) = match db.profile_mod_id(profile_id, mod_id)? {
+            Some(pm) => (pm, false),
+            None => (db.add_profile_mod(profile_id, mod_id, folder_id)?, true),
+        };
+        db.ensure_satellite_rows(mod_id)?;
+        db.conn.execute(
+            "UPDATE mod_versions SET current_version = ?1, available_versions = ?2, updated_at = ?3 WHERE mod_id = ?4",
+            params![version, serde_json::to_string(&versions)?, now, mod_id],
+        )?;
+        db.conn.execute(
+            "UPDATE mod_downloads SET download_url = ?1, cache_path = '', file_size = ?2, download_progress = 0,
+                    download_status = 'pending', updated_at = ?3 WHERE mod_id = ?4",
+            params![dl, size, now, mod_id],
+        )?;
+        db.conn.execute(
+            "UPDATE mod_status SET last_update_date = ?1, online_update_date = ?1, is_online_available = 1,
+                    is_local_not_found = 0, updated_at = ?2 WHERE mod_id = ?3",
+            params![now_ms_v, now, mod_id],
+        )?;
+        Ok(AddedOnline {
+            status: if added { "added".into() } else { "exists".into() },
+            mod_id,
+            profile_mod_id: pm_id,
+            created_mod: created,
+            platform_id,
+            name,
+            version,
+        })
+    }
+}
+
 /// ModUpdateService.needsOnlineModDownload
 pub fn needs_download(m: &ProfileMod) -> bool {
     m.cache_path.is_empty()
