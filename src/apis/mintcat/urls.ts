@@ -2,7 +2,6 @@
  * MintCat 后端 API 的源站、代理与服务路由约定（单处维护）。
  * 解析后的线路由设置页 / AppInitializer 写入 resolvedOrigin；未初始化前回退到语言启发式。
  */
-import i18n from '@/locales/i18n';
 
 type MintcatProxyPresetId = 'zh' | 'global';
 type MintcatApiOriginPreset = {
@@ -42,11 +41,12 @@ export function getMintcatApiResolvedOrigin(): string | null {
     return resolvedOrigin;
 }
 
-/** 与历史行为一致：中文界面优先 v1st，否则 mintcat.work */
+/**
+ * Upstream falls back to the mainland node (v1st) for a Chinese UI. This fork always falls back to
+ * the international node; the mainland node can still be picked by hand in Network Settings.
+ */
 export function getMintcatApiOriginLanguageFallback(): string {
-    return i18n.language?.startsWith('zh')
-        ? getMintcatOriginByPresetId('zh')
-        : getMintcatOriginByPresetId('global');
+    return getMintcatOriginByPresetId('global');
 }
 
 export function getMintcatApiOrigin(): string {

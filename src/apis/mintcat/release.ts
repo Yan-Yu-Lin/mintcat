@@ -5,7 +5,6 @@
  */
 import type { UpdateCheckItem, UpdateCheckManifestItem, UpdateCheckResult } from './types';
 import { invoke } from '@tauri-apps/api/core';
-import i18n from '@/locales/i18n';
 import { DEFAULT_RELEASE_CHANNEL } from './releaseChannel';
 
 /** 杭州 OSS 上的 update.json（中文界面默认） */
@@ -14,9 +13,12 @@ export const MINTCAT_UPDATE_MANIFEST_URL = 'https://yuri-oss-hz.oss-cn-hangzhou.
 /** 新加坡 OSS 上的 update.json（非中文界面默认，含英文） */
 export const MINTCAT_UPDATE_MANIFEST_URL_SG = 'https://yuri-oss-sg.oss-ap-southeast-1.aliyuncs.com/update.json';
 
-/** 按当前界面语言选择更新清单：中文 → 杭州，否则 → 新加坡 */
+/**
+ * Upstream picks Hangzhou for a Chinese UI and Singapore otherwise. Both buckets serve identical
+ * files, but Hangzhou often times out outside mainland China, so this fork always uses Singapore.
+ */
 export function getMintcatUpdateManifestUrl(): string {
-    return i18n.language?.startsWith('zh') ? MINTCAT_UPDATE_MANIFEST_URL : MINTCAT_UPDATE_MANIFEST_URL_SG;
+    return MINTCAT_UPDATE_MANIFEST_URL_SG;
 }
 
 /** 按 manifest URL 缓存进行中的拉取 Promise，避免重复请求 */

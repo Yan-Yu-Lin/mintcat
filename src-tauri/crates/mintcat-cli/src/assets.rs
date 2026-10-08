@@ -10,8 +10,9 @@ use std::time::Duration;
 
 use crate::report::Reporter;
 
-const MANIFEST_HZ: &str = "https://yuri-oss-hz.oss-cn-hangzhou.aliyuncs.com/update.json";
-const MANIFEST_SG: &str = "https://yuri-oss-sg.oss-ap-southeast-1.aliyuncs.com/update.json";
+/// Upstream picks the Hangzhou (mainland China) bucket for a Chinese UI and Singapore otherwise.
+/// Both serve identical files; the Hangzhou one often times out outside China, so always use Singapore.
+const MANIFEST_URL: &str = "https://yuri-oss-sg.oss-ap-southeast-1.aliyuncs.com/update.json";
 const MANIFEST_FILE: &str = "assets_manifest.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -63,13 +64,12 @@ pub struct AssetAction {
     pub path: PathBuf,
     pub local_version: String,
     pub latest_version: Option<String>,
-    pub action: String, // "up_to_date" | "download" | "would_download"
+    pub action: String, // "up_to_date" | "download" | "would_download" | "check_skipped"
 }
 
 pub struct AssetOptions<'a> {
     pub cache_dir: &'a Path,
     pub channel: &'a str,
-    pub language: &'a str,
     pub game: &'a str, // "drg" | "rc"
     pub include_ue4ss: bool,
     pub dry_run: bool,
@@ -142,14 +142,6 @@ fn compare_version(a: &str, b: &str) -> i64 {
     0
 }
 
-pub fn manifest_url(language: &str) -> &'static str {
-    if language.starts_with("zh") {
-        MANIFEST_HZ
-    } else {
-        MANIFEST_SG
-    }
-}
-
 fn http() -> Result<reqwest::blocking::Client> {
     Ok(reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(15))
@@ -158,7 +150,12 @@ fn http() -> Result<reqwest::blocking::Client> {
 }
 
 fn fetch_update_manifest(url: &str) -> Result<Vec<Value>> {
-    let resp = http()?
+    // update.json is a few KB: fail fast so an unreachable server can't stall the install.
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(15))
+        .build()?;
+    let resp = client
         .get(url)
         .header("Accept", "application/json")
         .send()
@@ -274,24 +271,25 @@ pub fn ensure_internal_assets(opts: &AssetOptions, rep: &Reporter) -> Result<(As
     let v = if force || !second_valid { "0".to_string() } else { manifest.get(second_key).to_string() };
     wanted.push((second_key, second_zip.clone(), v, second_valid));
 
+    let url = MANIFEST_URL;
     let mut actions = Vec::new();
-    if opts.offline {
-        for (key, path, local, ok) in &wanted {
-            if !ok {
-                bail!("{} missing or invalid at {:?} and --offline was given", key, path);
-            }
-            actions.push(AssetAction {
-                asset: key.to_string(),
-                path: path.clone(),
-                local_version: local.clone(),
-                latest_version: None,
-                action: "up_to_date".into(),
-            });
-        }
+    let mut offline_action = "up_to_date";
+    let items = if opts.offline {
+        None
     } else {
-        let url = manifest_url(opts.language);
         rep.info(format!("checking internal assets against {url}"));
-        let items = fetch_update_manifest(url).context("error.checkInternalAssetsUpdates")?;
+        match fetch_update_manifest(url) {
+            Ok(items) => Some(items),
+            // Unlike the GUI, don't fail the whole install when the zips we already have are valid.
+            Err(e) if wanted.iter().all(|(_, _, _, ok)| *ok) => {
+                rep.warn(format!("update check failed, using cached internal assets: {e:#}"));
+                offline_action = "check_skipped";
+                None
+            }
+            Err(e) => return Err(e.context("error.checkInternalAssetsUpdates")),
+        }
+    };
+    if let Some(items) = items {
         for (key, path, local, ok) in &wanted {
             let row = items.iter().find(|row| {
                 let ch = row.get("channel").and_then(|v| v.as_str()).unwrap_or("stable").to_lowercase();
@@ -327,6 +325,19 @@ pub fn ensure_internal_assets(opts: &AssetOptions, rep: &Reporter) -> Result<(As
                 }
             }
             actions.push(action);
+        }
+    } else {
+        for (key, path, local, ok) in &wanted {
+            if !ok {
+                bail!("{} missing or invalid at {:?} and --offline was given", key, path);
+            }
+            actions.push(AssetAction {
+                asset: key.to_string(),
+                path: path.clone(),
+                local_version: local.clone(),
+                latest_version: None,
+                action: offline_action.into(),
+            });
         }
     }
 

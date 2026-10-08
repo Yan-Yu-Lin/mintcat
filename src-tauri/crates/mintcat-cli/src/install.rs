@@ -337,13 +337,11 @@ pub fn run_install(
     }
 
     // Step 6: internal assets
-    let language = ctx.db.setting("language")?;
     let channel = release_channel(ctx.db)?;
     let (assets, asset_actions): (AssetPaths, Vec<AssetAction>) = ensure_internal_assets(
         &AssetOptions {
             cache_dir: &ctx.cache_dir,
             channel: &channel,
-            language: &language,
             game: kind,
             include_ue4ss: ue4ss,
             // asset zips only touch the cache (same as the GUI), so --target may fetch them
