@@ -12,14 +12,20 @@ import type {
     NetworkRoutePlan,
 } from './RequestTypes';
 
-let resolvedMintcatProxyMode: MintcatProxyMode = 'auto';
+let resolvedMintcatProxyMode: MintcatProxyMode = 'disabled';
 let hasResolvedMintcatProxyMode = false;
 
+/**
+ * Upstream defaults to 'auto': when a mod.io request or download fails or takes over 5 s, it is
+ * retried through the MintCat relay (api.mintcat.work/proxy/<url>, mod.io token included), which
+ * helps users in mainland China. This fork defaults to 'disabled' so requests always go straight to
+ * mod.io; 'auto' / 'enabled' can still be chosen in Network Settings.
+ */
 export function normalizeMintcatProxyMode(value?: string | null): MintcatProxyMode {
-    if (value === 'enabled' || value === 'disabled') {
+    if (value === 'enabled' || value === 'auto') {
         return value;
     }
-    return 'auto';
+    return 'disabled';
 }
 
 export function setMintcatProxyModeResolved(mode?: MintcatProxyMode | string | null): void {
@@ -125,7 +131,8 @@ export class RoutePolicy {
         proxyPolicy: NetworkProxyPolicy = 'direct',
         proxyMode: MintcatProxyMode = getMintcatProxyModeResolved(),
     ): NetworkRoutePlan {
-        if (proxyPolicy === 'direct') {
+        // 'disabled' also overrides forceMintcatProxy, so nothing goes through the relay.
+        if (proxyPolicy === 'direct' || proxyMode === 'disabled') {
             return { primary: this.buildDirectRoute(url) };
         }
 
@@ -142,10 +149,6 @@ export class RoutePolicy {
                 primary: this.buildProxyRoute(url, proxyMode),
                 fallback: this.buildDirectRoute(url),
             };
-        }
-
-        if (proxyMode === 'disabled') {
-            return { primary: this.buildDirectRoute(url) };
         }
 
         return {

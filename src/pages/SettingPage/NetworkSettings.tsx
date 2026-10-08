@@ -52,7 +52,7 @@ function formatProbeError(err?: string): string {
 export function NetworkSettings() {
     const [serverMode, setServerMode] = React.useState<ServerModeUi>('auto');
     const [networkProxy, setNetworkProxy] = React.useState('');
-    const [mintcatProxyMode, setMintcatProxyMode] = React.useState<MintcatProxyMode>('auto');
+    const [mintcatProxyMode, setMintcatProxyMode] = React.useState<MintcatProxyMode>('disabled');
     const [probeResults, setProbeResults] = React.useState<ProbeResult[]>([]);
     const [probing, setProbing] = React.useState(false);
 
